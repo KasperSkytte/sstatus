@@ -1,0 +1,389 @@
+#!/usr/bin/env python3
+"""
+This script summarizes the occupancy of the compute nodes available in the SLURM cluster by partition or individual nodes.
+"""
+
+import argparse
+from dataclasses import dataclass
+import re
+import subprocess
+
+bar_width = 20
+
+class Colours:
+    # Basic colors
+    RED = "\033[41m"      # Red background
+    ORANGE = "\033[43m"   # Yellow background for orange-like effect
+    GREEN = "\033[42m"    # Green background
+    BLUE = "\033[44m"     # Blue background for additional variety
+    PURPLE = "\033[45m"   # Magenta background for purple effect
+    CYAN = "\033[46m"     # Cyan background
+    NONE = "\033[0m"      # Reset
+    
+    # High-intensity colors
+    LIGHT_RED = "\033[101m"    # Bright red background
+    LIGHT_GREEN = "\033[102m"  # Bright green background
+    LIGHT_YELLOW = "\033[103m" # Bright yellow background
+    LIGHT_BLUE = "\033[104m"   # Bright blue background
+    LIGHT_PURPLE = "\033[105m" # Bright magenta background
+    LIGHT_CYAN = "\033[106m"   # Bright cyan background
+
+@dataclass
+class Node:
+    """
+    Represents information about a node in a Slurm cluster.
+    """
+    name: str
+    partition: str = ""
+    mem_total: int = 0
+    mem_used: int = 0
+    cpu_total: int = 0
+    cpu_used: int = 0
+    gpu_total: int = 0  # Default to 0 to indicate no GPU
+    gpu_used: int = 0
+    os_factor: int = 1
+    unavailable: bool = False # for marking whether nodes are unavailable, i.e. NOT rebooting, completing, failing etc...
+
+def colour_thres(fraction):
+    """
+    Returns a color code corresponding to a fraction between 0 and 1
+    according to thresholds set in this function.
+    """
+    if fraction <= .4:
+        return Colours.GREEN
+    elif fraction <= .8:
+        return Colours.ORANGE
+    elif fraction < 1:
+        return Colours.RED
+    else:
+        return Colours.PURPLE
+
+def in_gb(num_mb):
+    """
+    Returns a number of megabytes in gigabytes, rounded down to nearest
+    gigabyte.
+    """
+    return int(num_mb / 1024)
+
+def str_insert(piece, text, pos):
+    """
+    Inserts `piece` into `text` at position `pos`.
+    """
+    return text[:pos] + piece + text[pos:]
+
+def create_bar(used, total, bar_width = bar_width, free_width = 5, total_width = 5):
+    """
+    Creates a colorized bar based on the fraction of used and total capacity,
+    including the allocated value displayed on the bar.
+    """
+    fraction = used / total if total > 0 else 0
+    color = colour_thres(fraction)
+    padded_bar = f"{used}".ljust(bar_width)
+    bar = str_insert(Colours.NONE, padded_bar, round(bar_width * fraction))
+    return f"{total-used:>{int(free_width)}} {color}{bar}{Colours.NONE}/{total:<{int(total_width)}}"
+
+
+def get_partition_info(partition_name):
+    """
+    Retrieve the oversubscription factor and MaxMemPerCPU for a given partition.
+    Returns a dictionary with oversubscription factor and MaxMemPerCPU.
+    """
+    partition_info = subprocess.check_output(f"scontrol show partition {partition_name}", shell=True).decode()
+    oversubscribe_match = re.search(r'(?<=OverSubscribe=FORCE:)([^\s]+)', partition_info)
+    os_factor = int(oversubscribe_match.group(1)) if oversubscribe_match else 1
+    max_mem_per_cpu_match = re.search(r'(?<=MaxMemPerCPU=)([^\s]+)', partition_info)
+    max_mem_per_cpu = int(max_mem_per_cpu_match.group(1))/1024 if max_mem_per_cpu_match else None
+    return {"os_factor": os_factor, "max_mem_per_cpu": max_mem_per_cpu}
+
+def print_partition_summary(partition_nodes):
+    print(f"{'Partition':<11} | {'CPUs':^30} | {'Memory (GB)':^32} | {'GPUs':^11}|")
+    print("==============================================================================================")
+
+    for partition in sorted(partition_nodes.keys(), key = partition_sorter):
+        data = partition_nodes[partition]
+        partition_totals = {"cpu_used": 0, "cpu_total": 0, "mem_used": 0, "mem_total": 0, "gpu_used": 0, "gpu_total": 0}
+        for node in data["nodes"]:
+            cpu_total = node.cpu_total * data['os_factor']
+            partition_totals['cpu_used'] += node.cpu_used
+            partition_totals['cpu_total'] += cpu_total
+            partition_totals['mem_used'] += node.mem_used
+            partition_totals['mem_total'] += node.mem_total
+            partition_totals['gpu_used'] += node.gpu_used
+            partition_totals['gpu_total'] += node.gpu_total
+
+        os_factor = f"({data['os_factor']}x)" if data['os_factor'] > 1 else ""
+        cpu_bar = create_bar(used = partition_totals['cpu_used'], total = partition_totals['cpu_total'], free_width = 4, total_width = 4)
+        mem_bar = create_bar(used = in_gb(partition_totals['mem_used']), total = in_gb(partition_totals['mem_total']), bar_width = 20, free_width = 5, total_width = 5)
+        gpu_bar = create_bar(used = partition_totals['gpu_used'], total = partition_totals['gpu_total'], bar_width = 8, free_width = 1, total_width = 1) if partition_totals['gpu_total'] > 0 else ""
+        # add nodes avail/unavail?
+        print(f"{partition:<11} | {cpu_bar:<29} | {mem_bar:<30} | {gpu_bar:^10}")
+        
+    total_cpu_bar = create_bar(used = cluster_totals['cpu_used'], total = cluster_totals['cpu_total'], bar_width = 20, free_width = 4, total_width = 4)
+    total_mem_bar = create_bar(used = in_gb(cluster_totals['mem_used']), total = in_gb(cluster_totals['mem_total']), bar_width = 20)
+    total_gpu_bar = create_bar(used = cluster_totals['gpu_used'], total = cluster_totals['gpu_total'], bar_width = 8, free_width = 1, total_width = 1)
+    
+    # print total summary
+    print("----------------------------------------------------------------------------------------------")
+    print(f"{'Total:':<11} | {total_cpu_bar:<29} | {total_mem_bar:<30} | {total_gpu_bar:^10}")
+
+def print_node_summary(nodes, cluster_totals):
+    print(f"{'Node':<10} | {'Partition':<11} | {'CPUs':^30} | {'Memory (GB)':^32} | {'GPUs':^10} |")
+    print("===========================================================================================================")
+    
+    # Sort nodes first by partition name, then by node name
+    nodes.sort(key=lambda n: (partition_sorter(n.partition), n.name))
+    for node in nodes:
+        cpu_bar = create_bar(used = node.cpu_used, total = node.cpu_total * node.os_factor, free_width = 4, total_width = 4)
+        mem_bar = create_bar(used = in_gb(node.mem_used), total = in_gb(node.mem_total), free_width = 5, total_width = 5)
+        gpu_bar = create_bar(used = node.gpu_used, total = node.gpu_total, bar_width = 8, free_width = 1, total_width = 1) if node.gpu_total > 0 else ""
+        #os_factor = f"({node.os_factor}x)" if node.os_factor > 1 else ""
+        
+        print(f"{node.name:<10}{"*" if node.unavailable else " "}| {node.partition:<11} | {cpu_bar:<31} | {mem_bar:<30} | {gpu_bar:^10}")
+    
+    total_cpu_bar = create_bar(used = cluster_totals['cpu_used'], total = cluster_totals['cpu_total'], bar_width = 20, free_width = 4, total_width = 4)
+    total_mem_bar = create_bar(used = in_gb(cluster_totals['mem_used']), total = in_gb(cluster_totals['mem_total']), bar_width = 20, free_width = 5, total_width = 5)
+    total_gpu_bar = create_bar(used = cluster_totals['gpu_used'], total = cluster_totals['gpu_total'], bar_width = 8, free_width = 1, total_width = 1)
+    
+    # print total summary
+    print("-----------------------------------------------------------------------------------------------------------")
+    print(f"{'Total:':<24} | {total_cpu_bar:<31} | {total_mem_bar:<30} | {total_gpu_bar:^10}")
+
+# Obtain partition order directly from slurm (as defined in slurm.conf)
+scontrol_partition_out = subprocess.check_output("scontrol show partitions", shell=True).decode()
+partitions = re.findall(r'PartitionName=([^\s]+)', scontrol_partition_out)
+def partition_sorter(name):
+    try:
+        return partitions.index(name)
+    except ValueError:
+        return len(partitions)  # unknown partitions go last
+
+def print_jobs_summary():
+    jobs_r = subprocess.check_output("squeue -t r | tail -n +2 | wc -l", shell=True).decode().strip()
+    jobs_pd = subprocess.check_output("squeue -t pd | tail -n +2 | wc -l", shell=True).decode().strip()
+    jobs_tot = subprocess.check_output("squeue | tail -n +2 | wc -l", shell=True).decode().strip()
+    print(f"Jobs running/queued/total:\n  {jobs_r} / {jobs_pd} / {jobs_tot}")
+
+def print_total_summary(cluster_totals):
+    print("\nTotal cluster allocation summary:")
+    print('{:>15}   {:<30}'.format('CPUs:', create_bar(cluster_totals['cpu_used'], cluster_totals['cpu_total'])))
+    print('{:>15}   {:<30}'.format('Memory (GB):', create_bar(in_gb(cluster_totals['mem_used']), in_gb(cluster_totals['mem_total']))))
+    print('{:>15}   {:<30}'.format('GPUs:', create_bar(cluster_totals['gpu_used'], cluster_totals['gpu_total'])))
+
+def parse_time_to_hours(time_str):
+    """Parses Slurm TIME_LEFT string into total hours."""
+    if '-' in time_str:
+        days, time_part = time_str.split('-')
+        days = int(days)
+    else:
+        days = 0
+        time_part = time_str
+
+    parts = time_part.split(':')
+    if len(parts) == 3:
+        hours, minutes, seconds = map(int, parts)
+    elif len(parts) == 2:
+        hours = 0
+        minutes, seconds = map(int, parts)
+    else:
+        return 0
+
+    return (days * 24) + hours + (minutes / 60.0) + (seconds / 3600.0)
+
+def extract_gpu_count(gres_str):
+    """
+    Extracts the number of GPUs from strings like 'gpu:2', 'gpu:tesla:4', or '(null)'.
+    """
+    if not gres_str or 'gpu' not in gres_str.lower():
+        return 0
+    # Search for the last digit in the gpu string (e.g., gpu:tesla:2 -> 2)
+    match = re.search(r'gpu[:\w]*:(\d+)', gres_str.lower())
+    if match:
+        return int(match.group(1))
+    # Fallback for simple 'gpu:1'
+    match = re.search(r'gpu:(\d+)', gres_str.lower())
+    return int(match.group(1)) if match else 0
+
+def format_tres_hours(hours):
+    """Formats hours with K/M suffixes."""
+    if hours >= 1_000_000:
+        return f"{hours / 1_000_000:.1f}M"
+    elif hours >= 1_000:
+        return f"{hours / 1_000:.1f}K"
+    else:
+        return f"{hours:,.1f}"
+
+def print_queued_tres_hours():
+    """Calculates queued CPU and GPU hours using a single squeue call."""
+    try:
+        # %l=TimeLeft, %c=CPUs, %b=tres (%b is undocumented in squeue manpage!)
+        squeue_cmd = ["squeue", "-h", "-tPD", "-o", "%l %c %b"]
+        result = subprocess.run(squeue_cmd, capture_output=True, text=True, check=True)
+        squeue_output = result.stdout.strip()
+
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        return f"Error accessing squeue: {e}"
+
+    if not squeue_output:
+        return
+
+    total_cpu_hours = 0.0
+    total_gpu_hours = 0.0
+    total_cpus = 0
+    total_gpus = 0
+
+    for line in squeue_output.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+
+        # Parse Time and CPUs (always present)
+        time_hours = parse_time_to_hours(parts[0])
+        cpu_count = int(parts[1])
+        
+        # Parse GPUs (GRES column might be empty or (null))
+        gres_str = parts[2] if len(parts) > 2 else ""
+        gpu_count = extract_gpu_count(gres_str)
+
+        # Accumulate Totals
+        total_cpus += cpu_count
+        total_gpus += gpu_count
+        total_cpu_hours += (time_hours * cpu_count)
+        total_gpu_hours += (time_hours * gpu_count)
+    
+    # Only print if there is at least one resource type queued
+    if total_cpus > 0 or total_gpus > 0:
+        print()
+        print("Total resources requested from queued jobs:")
+        if total_cpus > 0:
+            print(f"  CPUs: {total_cpus} ({format_tres_hours(total_cpu_hours)} CPU hours)")
+        if total_gpus > 0:
+            print(f"  GPUs: {total_gpus} ({format_tres_hours(total_gpu_hours)} GPU hours)")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Displays a SLURM cluster allocation summary by partition or per node. https://github.com/KasperSkytte/sstatus"
+    )
+
+    parser.add_argument(
+        "-n", "--nodes", action="store_true",
+        help="show per-node status instead of by partition."
+    )
+    args = parser.parse_args()
+
+    scontrol_node_out = bytes.decode(
+        subprocess.check_output("scontrol show node", shell=True))
+    
+    # Parse data and store nodes by partition
+    partition_nodes = {}
+    nodes = []
+    cluster_totals = {
+        'cpu_used': 0,
+        'cpu_total': 0,
+        'mem_used': 0,
+        'mem_total': 0,
+        'gpu_used': 0,
+        'gpu_total': 0
+    }
+
+    # note: this doesn't work if one or more nodes belong to multiple partitions
+    for line in scontrol_node_out.splitlines():
+        if line.startswith('NodeName'):
+            nodename = re.search(r'(?<=NodeName=)[^ ]+', line).group()
+            node = Node(nodename)
+            # SLURM doesn't report number of allocated CPU's on partitions 
+            # with over-subscribe configured, so get it from running jobs from squeue instead
+            # !! this can result in negative numbers when jobs are allocated more than one node !!
+            # Their CPU count basically counts double if 2 nodes, triple if 3 etc...
+            # So let's stick to the output of "scontrol show node"!
+            #squeue_output = subprocess.check_output(f"squeue --nodelist {nodename} -t r -o '%C'", shell=True).decode().splitlines()[1:]
+            #node.cpu_used = sum(map(int, squeue_output))
+
+        elif line.lstrip().startswith('Partitions='):
+            partition = re.search(r'(?<=Partitions=)([^\s]+)', line).group(1)
+            node.partition = partition
+            partition_info = get_partition_info(partition)
+            node.os_factor = partition_info['os_factor']
+            if partition not in partition_nodes:
+                partition_nodes[partition] = {
+                    "nodes": [],
+                    "os_factor": partition_info["os_factor"],
+                    "max_mem_per_cpu": partition_info["max_mem_per_cpu"]
+                }
+            partition_nodes[partition]["nodes"].append(node)
+            nodes.append(node)
+        
+        elif line.lstrip().startswith('State='):
+            state_match = re.search(r'(?<=State=)[^\s]+', line)            
+            if state_match:
+                node_state = state_match.group(0).lower()
+                # list of keywords that trigger an 'unavailable' status
+                unavailable_keywords = [
+                    #"allocated+",
+                    "blocked",
+                    #"completing",
+                    "down",
+                    "drained",
+                    "draining",
+                    "fail",
+                    "failing",
+                    "future",
+                    "inval",
+                    "maint",
+                    "reboot_issued",
+                    "reboot_requested",
+                    "perfctrs",
+                    "noresp",
+                    #"planned",
+                    "power_down",
+                    "powered_down",
+                    "powering_down",
+                    "powering_up",
+                    "reserved",
+                    "unknown"
+                ]
+                if any(kw in node_state for kw in unavailable_keywords):
+                    node.unavailable = True
+                else:
+                    node.unavailable = False
+
+        elif line.lstrip().startswith('CPUAlloc='):
+            node.cpu_used = int(re.search(r'(?<=CPUAlloc=)[0-9]+', line).group())
+            node.cpu_total = int(re.search(r'(?<=CPUTot=)[0-9]+', line).group())
+
+        elif line.lstrip().startswith('RealMemory='):
+            node.mem_used = int(re.search(r'(?<=AllocMem=)[0-9]+', line).group())
+            node.mem_total = int(re.search(r'(?<=RealMemory=)[0-9]+', line).group())
+
+        elif line.lstrip().startswith('CfgTRES='):
+            if 'gres/gpu' in line:
+                node.gpu_total = int(re.search(r'(?<=gres/gpu=)[0-9]+', line).group())
+
+        elif line.lstrip().startswith('AllocTRES'):
+            gpu_alloc_match = re.search(r'(?<=gres/gpu=)[0-9]+', line)
+            if gpu_alloc_match:
+                node.gpu_used = int(gpu_alloc_match.group())
+    for node in nodes:
+        cluster_totals['cpu_used'] += node.cpu_used
+        cluster_totals['cpu_total'] += node.cpu_total * node.os_factor
+        cluster_totals['mem_used'] += node.mem_used
+        cluster_totals['mem_total'] += node.mem_total
+        cluster_totals['gpu_used'] += node.gpu_used
+        cluster_totals['gpu_total'] += node.gpu_total
+    # Display output based on arguments
+    print("Cluster allocation summary per partition or individual nodes (-n).")
+    print("(Numbers are reported in free/allocated/total).\n")
+    if args.nodes:
+        print_node_summary(nodes, cluster_totals)
+    else:
+        print_partition_summary(partition_nodes)
+    print_queued_tres_hours()
+    print()
+    print_jobs_summary()
+    reservations = subprocess.check_output("sinfo -Th | awk '{print $2}'", shell=True).decode().strip().splitlines()
+    # if no reservations sinfo will just output "No reservations in the system", so awk will output "reservations"
+    total_reservations = len(reservations) if reservations.count('reservations') == 0 else 0
+    if total_reservations > 0:
+        print()
+        print(f"Reservations active/total:\n  {reservations.count('ACTIVE')} / {total_reservations}")
+    print()
+    print("Use sinfo or squeue to obtain more details.")
