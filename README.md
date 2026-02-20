@@ -1,5 +1,5 @@
 # sstatus
-`sstatus` shows a quick overview of the current allocation status of a SLURM cluster with some colored bars per partition or node. It also shows some info about pending jobs and upcoming reservations. When a node is unavailable, it will be marked with an asterisk `*`.
+`sstatus` shows a quick overview of the current allocation status of a SLURM cluster with some colored bars per partition or node. It also shows some info about pending jobs and upcoming reservations. When a node is unavailable (based on reason codes), it will be marked with an asterisk `*`. Data is collected from `sinfo`, `squeue`, and `scontrol`.
 
 ## Usage
 ```
