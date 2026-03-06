@@ -138,7 +138,7 @@ def print_node_summary(nodes, cluster_totals):
         gpu_bar = create_bar(used = node.gpu_used, total = node.gpu_total, bar_width = 8, free_width = 1, total_width = 1) if node.gpu_total > 0 else ""
         #os_factor = f"({node.os_factor}x)" if node.os_factor > 1 else ""
         
-        print(f"{node.name:<10}{"*" if node.unavailable else " "}| {node.partition:<11} | {cpu_bar:<31} | {mem_bar:<30} | {gpu_bar:^10}")
+        print(f"{node.name:<10}{'*' if node.unavailable else ' '}| {node.partition:<11} | {cpu_bar:<31} | {mem_bar:<30} | {gpu_bar:^10}")
     
     total_cpu_bar = create_bar(used = cluster_totals['cpu_used'], total = cluster_totals['cpu_total'], bar_width = 20, free_width = 4, total_width = 4)
     total_mem_bar = create_bar(used = in_gb(cluster_totals['mem_used']), total = in_gb(cluster_totals['mem_total']), bar_width = 20, free_width = 5, total_width = 5)
