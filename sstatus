@@ -158,9 +158,9 @@ def partition_sorter(name):
         return len(partitions)  # unknown partitions go last
 
 def print_jobs_summary():
-    jobs_r = subprocess.check_output("squeue -t r | tail -n +2 | wc -l", shell=True).decode().strip()
-    jobs_pd = subprocess.check_output("squeue -t pd | tail -n +2 | wc -l", shell=True).decode().strip()
-    jobs_tot = subprocess.check_output("squeue | tail -n +2 | wc -l", shell=True).decode().strip()
+    jobs_r = subprocess.check_output("squeue -rt r | tail -n +2 | wc -l", shell=True).decode().strip()
+    jobs_pd = subprocess.check_output("squeue -rt pd | tail -n +2 | wc -l", shell=True).decode().strip()
+    jobs_tot = subprocess.check_output("squeue -r | tail -n +2 | wc -l", shell=True).decode().strip()
     print(f"Jobs running/queued/total:\n  {jobs_r} / {jobs_pd} / {jobs_tot}")
 
 def print_total_summary(cluster_totals):
@@ -216,7 +216,7 @@ def print_queued_tres_hours():
     """Calculates queued CPU and GPU hours using a single squeue call."""
     try:
         # %l=TimeLeft, %c=CPUs, %b=tres (%b is undocumented in squeue manpage!)
-        squeue_cmd = ["squeue", "-h", "-tPD", "-o", "%l %c %b"]
+        squeue_cmd = ["squeue", "-rh", "-tPD", "-o", "%l %c %b"]
         result = subprocess.run(squeue_cmd, capture_output=True, text=True, check=True)
         squeue_output = result.stdout.strip()
 
