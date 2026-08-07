@@ -21,7 +21,7 @@ options:
                         don't colourize the bars.
 ```
 
-By default the table is only as wide as it has to be: enough for the longest node and partition names, 10 characters per bar (8 for GPUs) or more if the allocated value needs it, plus the numbers printed on either side. With `-f`/`--fill` the bars stretch to fill the terminal window instead. The minimum always applies, so a window narrower than the table won't squash the columns.
+By default the table is only as wide as it has to be: enough for the longest node and partition names, 20 characters per bar (8 for GPUs) or more if the allocated value needs it, plus the numbers printed on either side. With `-f`/`--fill` the bars stretch to fill the terminal window instead. The minimum always applies, so a window narrower than the table won't squash the columns.
 
 ## Screenshots
 ### Per partition

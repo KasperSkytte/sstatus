@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 # table width to assume when the terminal size can't be determined
 FALLBACK_WIDTH = 80
 # minimum width of the coloured part of a bar
-MIN_BAR_WIDTH = 10
+MIN_BAR_WIDTH = 20
 # a data center server rarely holds more than 8 cards, so a shorter bar will do
 MIN_GPU_BAR_WIDTH = 8
 # column separator
