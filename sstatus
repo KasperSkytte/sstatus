@@ -6,11 +6,22 @@ SLURM cluster by partition or individual nodes.
 
 import argparse
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
 
-bar_width = 20
+# table width to assume when the terminal size can't be determined
+FALLBACK_WIDTH = 80
+# minimum width of the coloured part of a bar
+MIN_BAR_WIDTH = 10
+# a data center server rarely holds more than 8 cards, so a shorter bar will do
+MIN_GPU_BAR_WIDTH = 8
+# column separator
+SEP = " | "
+# matches ANSI escape sequences, needed to measure the printable width of a string
+ANSI_PATTERN = re.compile(r"\033\[[0-9;]*m")
+
 
 class Colours:
     # Basic colors
@@ -29,6 +40,13 @@ class Colours:
     LIGHT_BLUE = "\033[104m"   # Bright blue background
     LIGHT_PURPLE = "\033[105m" # Bright magenta background
     LIGHT_CYAN = "\033[106m"   # Bright cyan background
+
+    @classmethod
+    def disable(cls):
+        """Replaces every colour code with an empty string."""
+        for name in [n for n in vars(cls) if n.isupper()]:
+            setattr(cls, name, "")
+
 
 @dataclass
 class Node:
@@ -66,6 +84,26 @@ def run_slurm(command):
     return result.stdout
 
 
+def visible_width(text):
+    """
+    Returns the printable width of a string, ignoring ANSI escape sequences.
+    """
+    return len(ANSI_PATTERN.sub("", text))
+
+
+def pad(text, width, align="<"):
+    """
+    Pads a string (which may contain ANSI escape sequences) to `width`.
+    """
+    padding = " " * max(0, width - visible_width(text))
+    if align == ">":
+        return padding + text
+    if align == "^":
+        left = len(padding) // 2
+        return padding[:left] + text + padding[left:]
+    return text + padding
+
+
 def colour_thres(fraction):
     """
     Returns a color code corresponding to a fraction between 0 and 1
@@ -80,6 +118,7 @@ def colour_thres(fraction):
     else:
         return Colours.PURPLE
 
+
 def in_gb(num_mb):
     """
     Returns a number of megabytes in gigabytes, rounded down to nearest
@@ -87,22 +126,135 @@ def in_gb(num_mb):
     """
     return int(num_mb / 1024)
 
-def str_insert(piece, text, pos):
-    """
-    Inserts `piece` into `text` at position `pos`.
-    """
-    return text[:pos] + piece + text[pos:]
 
-def create_bar(used, total, bar_width = bar_width, free_width = 5, total_width = 5):
+def create_bar(used, total, bar_width, free_width, total_width):
     """
     Creates a colorized bar based on the fraction of used and total capacity,
-    including the allocated value displayed on the bar.
+    including the allocated value displayed on the bar. The result is exactly
+    `free_width + 1 + bar_width + 1 + total_width` characters wide when printed.
     """
     fraction = used / total if total > 0 else 0
-    color = colour_thres(fraction)
-    padded_bar = f"{used}".ljust(bar_width)
-    bar = str_insert(Colours.NONE, padded_bar, round(bar_width * fraction))
-    return f"{total-used:>{int(free_width)}} {color}{bar}{Colours.NONE}/{total:<{int(total_width)}}"
+    colour = colour_thres(fraction)
+    label = f"{used}".ljust(bar_width)
+    filled = min(bar_width, max(0, round(bar_width * fraction)))
+    bar = f"{colour}{label[:filled]}{Colours.NONE}{label[filled:]}"
+    return f"{total - used:>{free_width}} {bar}/{total:<{total_width}}"
+
+
+class ResourceColumn:
+    """
+    A table column holding used/total pairs rendered as bars. The widths of the
+    free, allocated and total parts are derived from the values it holds, so
+    the column is only ever as wide as it needs to be.
+    """
+
+    def __init__(self, header, weight=1.0, min_bar=MIN_BAR_WIDTH):
+        self.header = header
+        self.weight = weight
+        self.min_bar = min_bar
+        self.values = []
+        self.free_width = 1
+        self.total_width = 1
+        self.bar_width = min_bar
+
+    def add(self, used, total):
+        """Adds a cell, or an empty cell if the resource is not available."""
+        self.values.append((used, total) if total > 0 else None)
+
+    @property
+    def used(self):
+        """Whether any row in this column has something to show."""
+        return any(value is not None for value in self.values)
+
+    def measure(self):
+        """
+        Fixes the width of the numbers around the bar and returns the minimum
+        total width of the column.
+        """
+        cells = [value for value in self.values if value is not None] or [(0, 0)]
+        self.free_width = max(len(f"{total - used}") for used, total in cells)
+        self.total_width = max(len(f"{total}") for used, total in cells)
+        # the bar has to fit the allocated value that is printed on top of it
+        min_bar = max(self.min_bar, max(len(f"{used}") for used, total in cells))
+        return max(len(self.header), self.overhead + min_bar)
+
+    @property
+    def overhead(self):
+        """Width of everything in a cell except the bar itself."""
+        return self.free_width + self.total_width + 2
+
+    def render(self, index):
+        """Renders row `index`, padded to the full column width."""
+        value = self.values[index]
+        if value is None:
+            return " " * self.width
+        return create_bar(*value, self.bar_width, self.free_width, self.total_width)
+
+    @property
+    def width(self):
+        return self.overhead + self.bar_width
+
+
+@dataclass
+class Row:
+    """A single line of the table: some text labels and a set of resources."""
+    labels: list
+    flag: str = " "
+
+
+def print_table(label_headers, rows, columns, total_label, total_width):
+    """
+    Prints a table of resource bars. All column widths are derived from the
+    content, and the bars then grow to fill `total_width` characters. Pass a
+    `total_width` of 0 to keep the table at its minimum width.
+
+    `rows` holds one Row per line plus a final one for the totals, and every
+    ResourceColumn in `columns` holds exactly one value per row.
+    """
+    columns = [column for column in columns if column.used]
+    label_widths = [
+        max([len(header)] + [len(row.labels[i]) for row in rows[:-1]])
+        for i, header in enumerate(label_headers)
+    ]
+    # the flag is printed right after the first label, so widen that column
+    flag_width = 1 if any(row.flag.strip() for row in rows) else 0
+    label_widths[0] += flag_width
+    # the labels of the totals row are replaced by a single label spanning them all
+    label_span = max(
+        sum(label_widths) + len(SEP) * (len(label_widths) - 1),
+        len(total_label),
+    )
+
+    # grow the bars so the table fills the available width
+    min_widths = [column.measure() for column in columns]
+    fixed_width = label_span + sum(len(SEP) + width for width in min_widths)
+    extra = max(0, total_width - fixed_width)
+    total_weight = sum(column.weight for column in columns)
+    shares = [int(extra * column.weight / total_weight) for column in columns]
+    # hand any rounding remainder to the first column
+    shares[0] += extra - sum(shares)
+    for column, min_width, share in zip(columns, min_widths, shares):
+        column.bar_width = min_width - column.overhead + share
+
+    table_width = label_span + sum(len(SEP) + column.width for column in columns)
+    header = pad(
+        SEP.join(pad(header, width) for header, width in zip(label_headers, label_widths)),
+        label_span,
+    )
+    header += "".join(SEP + pad(column.header, column.width, "^") for column in columns)
+    print(header)
+    print("=" * table_width)
+
+    for index, row in enumerate(rows):
+        if index == len(rows) - 1:
+            print("-" * table_width)
+            labels = pad(total_label, label_span)
+        else:
+            cells = [pad(label, width) for label, width in zip(row.labels, label_widths)]
+            if flag_width:
+                cells[0] = pad(row.labels[0], label_widths[0] - flag_width) + row.flag
+            labels = pad(SEP.join(cells), label_span)
+        print(labels + "".join(SEP + column.render(index) for column in columns))
 
 
 def parse_partitions(scontrol_output):
@@ -218,46 +370,50 @@ def sum_resources(nodes, os_factor=None):
     }
 
 
-def print_partition_summary(partitions, partition_nodes, cluster_totals):
-    print(f"{'Partition':<11} | {'CPUs':^30} | {'Memory (GB)':^32} | {'GPUs':^11}|")
-    print("==============================================================================================")
+def print_partition_summary(partitions, partition_nodes, cluster_totals, total_width):
+    rows = []
+    cpus = ResourceColumn("CPUs")
+    memory = ResourceColumn("Memory (GB)")
+    gpus = ResourceColumn("GPUs", weight=0.4, min_bar=MIN_GPU_BAR_WIDTH)
 
     for partition, nodes in partition_nodes.items():
         os_factor = partitions.get(partition, {}).get("os_factor", 1)
         totals = sum_resources(nodes, os_factor)
         label = f"{partition} ({os_factor}x)" if os_factor > 1 else partition
+        rows.append(Row([label]))
+        cpus.add(totals["cpu_used"], totals["cpu_total"])
+        memory.add(in_gb(totals["mem_used"]), in_gb(totals["mem_total"]))
+        gpus.add(totals["gpu_used"], totals["gpu_total"])
 
-        cpu_bar = create_bar(used = totals['cpu_used'], total = totals['cpu_total'], free_width = 4, total_width = 4)
-        mem_bar = create_bar(used = in_gb(totals['mem_used']), total = in_gb(totals['mem_total']), bar_width = 20, free_width = 5, total_width = 5)
-        gpu_bar = create_bar(used = totals['gpu_used'], total = totals['gpu_total'], bar_width = 8, free_width = 1, total_width = 1) if totals['gpu_total'] > 0 else ""
-        print(f"{label:<11} | {cpu_bar:<29} | {mem_bar:<30} | {gpu_bar:^10}")
+    rows.append(Row(["Total:"]))
+    cpus.add(cluster_totals["cpu_used"], cluster_totals["cpu_total"])
+    memory.add(in_gb(cluster_totals["mem_used"]), in_gb(cluster_totals["mem_total"]))
+    gpus.add(cluster_totals["gpu_used"], cluster_totals["gpu_total"])
 
-    total_cpu_bar = create_bar(used = cluster_totals['cpu_used'], total = cluster_totals['cpu_total'], bar_width = 20, free_width = 4, total_width = 4)
-    total_mem_bar = create_bar(used = in_gb(cluster_totals['mem_used']), total = in_gb(cluster_totals['mem_total']), bar_width = 20)
-    total_gpu_bar = create_bar(used = cluster_totals['gpu_used'], total = cluster_totals['gpu_total'], bar_width = 8, free_width = 1, total_width = 1)
+    print_table(["Partition"], rows, [cpus, memory, gpus], "Total:", total_width)
 
-    # print total summary
-    print("----------------------------------------------------------------------------------------------")
-    print(f"{'Total:':<11} | {total_cpu_bar:<29} | {total_mem_bar:<30} | {total_gpu_bar:^10}")
 
-def print_node_summary(nodes, cluster_totals):
-    print(f"{'Node':<10} | {'Partition':<11} | {'CPUs':^30} | {'Memory (GB)':^32} | {'GPUs':^10} |")
-    print("===========================================================================================================")
+def print_node_summary(nodes, cluster_totals, total_width):
+    rows = []
+    cpus = ResourceColumn("CPUs")
+    memory = ResourceColumn("Memory (GB)")
+    gpus = ResourceColumn("GPUs", weight=0.4, min_bar=MIN_GPU_BAR_WIDTH)
 
     for node in nodes:
-        cpu_bar = create_bar(used = node.cpu_used, total = node.cpu_total * node.os_factor, free_width = 4, total_width = 4)
-        mem_bar = create_bar(used = in_gb(node.mem_used), total = in_gb(node.mem_total), free_width = 5, total_width = 5)
-        gpu_bar = create_bar(used = node.gpu_used, total = node.gpu_total, bar_width = 8, free_width = 1, total_width = 1) if node.gpu_total > 0 else ""
+        rows.append(Row([node.name, node.partition], flag="*" if node.unavailable else " "))
+        cpus.add(node.cpu_used, node.cpu_total * node.os_factor)
+        memory.add(in_gb(node.mem_used), in_gb(node.mem_total))
+        gpus.add(node.gpu_used, node.gpu_total)
 
-        print(f"{node.name:<10}{'*' if node.unavailable else ' '}| {node.partition:<11} | {cpu_bar:<31} | {mem_bar:<30} | {gpu_bar:^10}")
+    rows.append(Row(["Total:", ""]))
+    cpus.add(cluster_totals["cpu_used"], cluster_totals["cpu_total"])
+    memory.add(in_gb(cluster_totals["mem_used"]), in_gb(cluster_totals["mem_total"]))
+    gpus.add(cluster_totals["gpu_used"], cluster_totals["gpu_total"])
 
-    total_cpu_bar = create_bar(used = cluster_totals['cpu_used'], total = cluster_totals['cpu_total'], bar_width = 20, free_width = 4, total_width = 4)
-    total_mem_bar = create_bar(used = in_gb(cluster_totals['mem_used']), total = in_gb(cluster_totals['mem_total']), bar_width = 20, free_width = 5, total_width = 5)
-    total_gpu_bar = create_bar(used = cluster_totals['gpu_used'], total = cluster_totals['gpu_total'], bar_width = 8, free_width = 1, total_width = 1)
+    print_table(["Node", "Partition"], rows, [cpus, memory, gpus], "Total:", total_width)
 
-    # print total summary
-    print("-----------------------------------------------------------------------------------------------------------")
-    print(f"{'Total:':<24} | {total_cpu_bar:<31} | {total_mem_bar:<30} | {total_gpu_bar:^10}")
+    if any(node.unavailable for node in nodes):
+        print("\n* node is unavailable (down, drained, reserved, ...)")
 
 
 def print_jobs_summary():
@@ -368,11 +524,32 @@ def parse_args():
         "-n", "--nodes", action="store_true",
         help="show per-node status instead of by partition."
     )
+    width = parser.add_mutually_exclusive_group()
+    width.add_argument(
+        "-w", "--width", type=int, metavar="COLUMNS",
+        help="fill this many columns instead of the terminal width."
+    )
+    width.add_argument(
+        "-c", "--compact", action="store_true",
+        help="don't stretch the table to fill the window, only print it as wide as its contents require."
+    )
+    parser.add_argument(
+        "--no-colour", "--no-color", dest="colour", action="store_false",
+        help="don't colourize the bars."
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    if not args.colour:
+        Colours.disable()
+
+    # a width of 0 leaves the table at the minimum width its contents need
+    if args.compact:
+        total_width = 0
+    else:
+        total_width = args.width or shutil.get_terminal_size(fallback=(FALLBACK_WIDTH, 24)).columns
 
     partitions = parse_partitions(run_slurm(["scontrol", "show", "partition"]))
     nodes = parse_nodes(run_slurm(["scontrol", "show", "node"]), partitions)
@@ -398,9 +575,9 @@ def main():
             min((partition_order.index(name) for name in node.partitions), default=len(partition_order)),
             node.name,
         ))
-        print_node_summary(nodes, cluster_totals)
+        print_node_summary(nodes, cluster_totals, total_width)
     else:
-        print_partition_summary(partitions, partition_nodes, cluster_totals)
+        print_partition_summary(partitions, partition_nodes, cluster_totals, total_width)
     print_queued_tres_hours()
     print()
     print_jobs_summary()
