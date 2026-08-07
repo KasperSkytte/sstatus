@@ -1,20 +1,28 @@
 # sstatus
-`sstatus` shows a quick overview of the current allocation status of a SLURM cluster with some colored bars per partition or node. It also shows some info about pending jobs and upcoming reservations. When a node is unavailable (based on reason codes), it will be marked with an asterisk `*`. Data is collected from `sinfo`, `squeue`, and `scontrol`.
+`sstatus` shows a quick overview of the current allocation status of a SLURM cluster with some colored bars per partition or node. It also shows some info about pending jobs and upcoming reservations. When a node is unavailable (based on reason codes), it will be marked with an asterisk `*`. Data is collected from `sinfo`, `squeue`, and `scontrol`. Column alignment scales dynamically to the length of node and partition names as well as the current terminal window size (best effort).
 
 ## Requirements
-Just python3 and its default packages.
+Just python3 and its default packages. A slurm cluster, obviously.
 
 ## Usage
 ```
 $ sstatus -h
-usage: sstatus [-h] [-n]
+usage: sstatus [-h] [-n] [-w COLUMNS | -c] [--no-colour]
 
-Displays SLURM cluster allocation summary by partition or per node. https://github.com/KasperSkytte/sstatus
+Displays a SLURM cluster allocation summary by partition or per node. https://github.com/KasperSkytte/sstatus
 
 options:
-  -h, --help   show this help message and exit
-  -n, --nodes  show per-node status instead of by partition.
+  -h, --help            show this help message and exit
+  -n, --nodes           show per-node status instead of by partition.
+  -w COLUMNS, --width COLUMNS
+                        fill this many columns instead of the terminal width.
+  -c, --compact         don't stretch the table to fill the window, only print it as wide as
+                        its contents require.
+  --no-colour, --no-color
+                        don't colourize the bars.
 ```
+
+By default the bars stretch to fill the terminal window. With `-c`/`--compact` the table is only as wide as it has to be: enough for the longest node and partition names, 10 characters per bar (8 for GPUs) or more if the allocated value needs it, plus the numbers printed on either side. That minimum always applies, so a window narrower than the table won't squash the columns.
 
 ## Screenshots
 ### Per partition
