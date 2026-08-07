@@ -526,12 +526,12 @@ def parse_args():
     )
     width = parser.add_mutually_exclusive_group()
     width.add_argument(
-        "-w", "--width", type=int, metavar="COLUMNS",
-        help="fill this many columns instead of the terminal width."
+        "-f", "--fill", action="store_true",
+        help="stretch the table to fill the width of the window."
     )
     width.add_argument(
-        "-c", "--compact", action="store_true",
-        help="don't stretch the table to fill the window, only print it as wide as its contents require."
+        "-w", "--width", type=int, metavar="COLUMNS",
+        help="stretch the table to fill this many columns."
     )
     parser.add_argument(
         "--no-colour", "--no-color", dest="colour", action="store_false",
@@ -546,10 +546,10 @@ def main():
         Colours.disable()
 
     # a width of 0 leaves the table at the minimum width its contents need
-    if args.compact:
-        total_width = 0
+    if args.fill:
+        total_width = shutil.get_terminal_size(fallback=(FALLBACK_WIDTH, 24)).columns
     else:
-        total_width = args.width or shutil.get_terminal_size(fallback=(FALLBACK_WIDTH, 24)).columns
+        total_width = args.width or 0
 
     partitions = parse_partitions(run_slurm(["scontrol", "show", "partition"]))
     nodes = parse_nodes(run_slurm(["scontrol", "show", "node"]), partitions)
