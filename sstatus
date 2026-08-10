@@ -62,7 +62,7 @@ class Node:
     gpu_total: int = 0  # Default to 0 to indicate no GPU
     gpu_used: int = 0
     os_factor: int = 1
-    unavailable: bool = False # for marking whether nodes are unavailable, i.e. NOT rebooting, completing, failing etc...
+    unavailable: bool = False # for marking whether nodes are unavailable, i.e. rebooting, completing, failing etc...
 
     @property
     def partition(self):
@@ -202,7 +202,7 @@ class Row:
     flag: str = " "
 
 
-def print_table(label_headers, rows, columns, total_label, total_width):
+def print_table(label_headers, label_aligns, rows, columns, total_width):
     """
     Prints a table of resource bars. All column widths are derived from the
     content, and the bars then grow to fill `total_width` characters. Pass a
@@ -213,17 +213,13 @@ def print_table(label_headers, rows, columns, total_label, total_width):
     """
     columns = [column for column in columns if column.used]
     label_widths = [
-        max([len(header)] + [len(row.labels[i]) for row in rows[:-1]])
+        max([len(header)] + [len(row.labels[i]) for row in rows])
         for i, header in enumerate(label_headers)
     ]
     # the flag is printed right after the first label, so widen that column
     flag_width = 1 if any(row.flag.strip() for row in rows) else 0
     label_widths[0] += flag_width
-    # the labels of the totals row are replaced by a single label spanning them all
-    label_span = max(
-        sum(label_widths) + len(SEP) * (len(label_widths) - 1),
-        len(total_label),
-    )
+    label_span = sum(label_widths) + len(SEP) * (len(label_widths) - 1)
 
     # grow the bars so the table fills the available width
     min_widths = [column.measure() for column in columns]
@@ -237,9 +233,9 @@ def print_table(label_headers, rows, columns, total_label, total_width):
         column.bar_width = min_width - column.overhead + share
 
     table_width = label_span + sum(len(SEP) + column.width for column in columns)
-    header = pad(
-        SEP.join(pad(header, width) for header, width in zip(label_headers, label_widths)),
-        label_span,
+    header = SEP.join(
+        pad(header, width, align)
+        for header, width, align in zip(label_headers, label_widths, label_aligns)
     )
     header += "".join(SEP + pad(column.header, column.width, "^") for column in columns)
     print(header)
@@ -248,13 +244,13 @@ def print_table(label_headers, rows, columns, total_label, total_width):
     for index, row in enumerate(rows):
         if index == len(rows) - 1:
             print("-" * table_width)
-            labels = pad(total_label, label_span)
-        else:
-            cells = [pad(label, width) for label, width in zip(row.labels, label_widths)]
-            if flag_width:
-                cells[0] = pad(row.labels[0], label_widths[0] - flag_width) + row.flag
-            labels = pad(SEP.join(cells), label_span)
-        print(labels + "".join(SEP + column.render(index) for column in columns))
+        cells = [
+            pad(label, width, align)
+            for label, width, align in zip(row.labels, label_widths, label_aligns)
+        ]
+        if flag_width:
+            cells[0] = pad(row.labels[0], label_widths[0] - flag_width, label_aligns[0]) + row.flag
+        print(SEP.join(cells) + "".join(SEP + column.render(index) for column in columns))
 
 
 def parse_partitions(scontrol_output):
@@ -282,7 +278,7 @@ def parse_nodes(scontrol_output, partitions):
     """
     Parses `scontrol show node` into a list of Node objects.
     """
-    # list of keywords in the node state that trigger an 'unavailable' status
+    # list of keywords in the node state that trigger an 'unavailable' state
     unavailable_keywords = [
         "blocked",
         "down",
@@ -370,7 +366,15 @@ def sum_resources(nodes, os_factor=None):
     }
 
 
-def print_partition_summary(partitions, partition_nodes, cluster_totals, total_width):
+def count_nodes(nodes):
+    """
+    Describes a group of nodes as "idle/total".
+    """
+    idle = sum(1 for node in nodes if not node.unavailable and not node.cpu_used)
+    return f"{idle}/{len(nodes)}"
+
+
+def print_partition_summary(partitions, partition_nodes, all_nodes, cluster_totals, total_width):
     rows = []
     cpus = ResourceColumn("CPUs")
     memory = ResourceColumn("Memory (GB)")
@@ -380,17 +384,17 @@ def print_partition_summary(partitions, partition_nodes, cluster_totals, total_w
         os_factor = partitions.get(partition, {}).get("os_factor", 1)
         totals = sum_resources(nodes, os_factor)
         label = f"{partition} ({os_factor}x)" if os_factor > 1 else partition
-        rows.append(Row([label]))
+        rows.append(Row([label, count_nodes(nodes)]))
         cpus.add(totals["cpu_used"], totals["cpu_total"])
         memory.add(in_gb(totals["mem_used"]), in_gb(totals["mem_total"]))
         gpus.add(totals["gpu_used"], totals["gpu_total"])
 
-    rows.append(Row(["Total:"]))
+    rows.append(Row(["Total:", count_nodes(all_nodes)]))
     cpus.add(cluster_totals["cpu_used"], cluster_totals["cpu_total"])
     memory.add(in_gb(cluster_totals["mem_used"]), in_gb(cluster_totals["mem_total"]))
     gpus.add(cluster_totals["gpu_used"], cluster_totals["gpu_total"])
 
-    print_table(["Partition"], rows, [cpus, memory, gpus], "Total:", total_width)
+    print_table(["Partition", "Nodes"], ["<", ">"], rows, [cpus, memory, gpus], total_width)
 
 
 def print_node_summary(nodes, cluster_totals, total_width):
@@ -410,10 +414,7 @@ def print_node_summary(nodes, cluster_totals, total_width):
     memory.add(in_gb(cluster_totals["mem_used"]), in_gb(cluster_totals["mem_total"]))
     gpus.add(cluster_totals["gpu_used"], cluster_totals["gpu_total"])
 
-    print_table(["Node", "Partition"], rows, [cpus, memory, gpus], "Total:", total_width)
-
-    if any(node.unavailable for node in nodes):
-        print("\n* node is unavailable (down, drained, reserved, ...)")
+    print_table(["Node", "Partition"], ["<", "<"], rows, [cpus, memory, gpus], total_width)
 
 
 def print_jobs_summary():
@@ -534,6 +535,10 @@ def parse_args():
         help="fill this many columns instead of the width of the window."
     )
     parser.add_argument(
+        "-t", "--table-only", action="store_true",
+        help="print only the table, without the surrounding job, queue and reservation summaries."
+    )
+    parser.add_argument(
         "--no-colour", "--no-color", dest="colour", action="store_false",
         help="don't colourize the bars."
     )
@@ -566,8 +571,10 @@ def main():
     # a node can be in several partitions, so total over the nodes themselves
     cluster_totals = sum_resources(nodes)
 
-    print("Cluster allocation summary per partition or individual nodes (-n).")
-    print("(Numbers are reported in free/allocated/total).\n")
+    if not args.table_only:
+        print("Cluster allocation summary per partition or individual nodes (-n).")
+        print("(Numbers are reported in free/allocated/total).\n")
+
     if args.nodes:
         # sort by partition order first, then by node name
         partition_order = list(partition_nodes)
@@ -577,7 +584,12 @@ def main():
         ))
         print_node_summary(nodes, cluster_totals, total_width)
     else:
-        print_partition_summary(partitions, partition_nodes, cluster_totals, total_width)
+        print_partition_summary(partitions, partition_nodes, nodes, cluster_totals, total_width)
+
+    if args.table_only:
+        return
+    if args.nodes and any(node.unavailable for node in nodes):
+        print("\n* node is unavailable (down, drained, reserved, ...)")
     print_queued_tres_hours()
     print()
     print_jobs_summary()

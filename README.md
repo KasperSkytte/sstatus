@@ -7,7 +7,7 @@ Just python3 and its default packages. A slurm cluster, obviously.
 ## Usage
 ```
 $ sstatus -h
-usage: sstatus [-h] [-n] [-c | -w COLUMNS] [--no-colour]
+usage: sstatus [-h] [-n] [-c | -w COLUMNS] [-t] [--no-colour]
 
 Displays a SLURM cluster allocation summary by partition or per node. https://github.com/KasperSkytte/sstatus
 
@@ -18,11 +18,13 @@ options:
                         its contents require.
   -w COLUMNS, --width COLUMNS
                         fill this many columns instead of the width of the window.
+  -t, --table-only      print only the table, without the surrounding job, queue and
+                        reservation summaries.
   --no-colour, --no-color
                         don't colourize the bars.
 ```
 
-By default the bars stretch to fill the terminal window. With `-c`/`--compact` the table is only as wide as it has to be: enough for the longest node and partition names, 10 characters per bar (8 for GPUs) or more if the allocated value needs it, plus the numbers printed on either side. That minimum always applies, so a window narrower than the table won't squash the columns.
+By default the bars stretch to fill the terminal window. With `-c`/`--compact` the table is only as wide as it has to be: enough for the longest node and partition names, 10 characters per bar (8 for GPUs) or more if the allocated value needs it, plus the numbers printed on either side. That minimum always applies.
 
 ## Screenshots
 ### Per partition
