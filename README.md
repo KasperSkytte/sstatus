@@ -26,6 +26,19 @@ options:
 
 By default the bars stretch to fill the terminal window. With `-c`/`--compact` the table is only as wide as it has to be: enough for the longest node and partition names, 10 characters per bar (8 for GPUs) or more if the allocated value needs it, plus the numbers printed on either side. That minimum always applies.
 
+## Oversubscription
+Partitions configured with `OverSubscribe=FORCE:n` in `slurm.conf` run up to `n` jobs per CPU, so their CPU totals are multiplied by `n` and the partition name gets an `(nx)` suffix. A partition holding a single 40 core node with `OverSubscribe=FORCE:4` reports 160 CPUs:
+
+```
+Partition        | Nodes |        CPUs        |   Memory (GB)
+================================================================
+interactive (4x) | 0/0/1 | 148 12        /160 | 31 31        /62
+```
+
+The per-node table (`-n`) scales a node's CPU total the same way, and a node in several oversubscribed partitions is scaled by the largest of their factors. Memory and GPUs are never scaled, since neither is oversubscribed. Neither is the `Nodes` column, which counts a node as allocated once its physical cores are taken.
+
+Only `FORCE:n` is picked up. `OverSubscribe=YES:n` is left at 1x, because there the sharing only happens for jobs that explicitly ask for it, so the extra capacity isn't something the partition can be counted on to provide.
+
 ## Screenshots
 ### Per partition
 ![partition](www/sstatus_partition.png)
