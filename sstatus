@@ -369,12 +369,15 @@ def sum_resources(nodes, os_factor=None):
 def count_nodes(nodes):
     """
     Describes a group of nodes as "free/allocated/total". A node is only free
-    when none of its CPUs are allocated and only allocated when all of them
-    are, so partly allocated nodes count as neither and the numbers don't
-    necessarily add up.
+    when none of its CPUs are allocated, and counts as allocated when all of
+    them are or when the node is unavailable, so partly allocated nodes count
+    as neither and the numbers don't necessarily add up.
     """
-    free = sum(1 for node in nodes if not node.cpu_used)
-    allocated = sum(1 for node in nodes if node.cpu_total and node.cpu_used >= node.cpu_total)
+    free = sum(1 for node in nodes if not node.unavailable and not node.cpu_used)
+    allocated = sum(
+        1 for node in nodes
+        if node.unavailable or (node.cpu_total and node.cpu_used >= node.cpu_total)
+    )
     return f"{free}/{allocated}/{len(nodes)}"
 
 
