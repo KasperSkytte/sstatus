@@ -9,7 +9,8 @@ Just python3 and its default packages. A slurm cluster, obviously.
 $ sstatus -h
 usage: sstatus [-h] [-n] [-c | -w COLUMNS] [-t] [--no-colour]
 
-Displays a SLURM cluster allocation summary by partition or per node. https://github.com/KasperSkytte/sstatus
+Displays a SLURM cluster allocation summary by partition or per node.
+https://github.com/KasperSkytte/sstatus
 
 options:
   -h, --help            show this help message and exit
@@ -22,9 +23,27 @@ options:
                         reservation summaries.
   --no-colour, --no-color
                         don't colourize the bars.
+
+Every option can also be set with an environment variable, so preferences can be exported
+from ~/.bashrc: SSTATUS_NODES, SSTATUS_COMPACT, SSTATUS_WIDTH, SSTATUS_TABLE_ONLY and
+SSTATUS_COLOUR. Booleans are true for 1, true, yes or on. Options given on the command line
+take precedence.
 ```
 
 By default the bars stretch to fill the terminal window. With `-c`/`--compact` the table is only as wide as it has to be: enough for the longest node and partition names, 10 characters per bar (8 for GPUs) or more if the allocated value needs it, plus the numbers printed on either side. That minimum always applies.
+
+## Environment variables
+Every option can also be set with an environment variable, so preferences can be exported from `~/.bashrc` instead of being typed on every run:
+
+```bash
+export SSTATUS_NODES=1       # same as -n
+export SSTATUS_COMPACT=1     # same as -c
+export SSTATUS_WIDTH=120     # same as -w 120
+export SSTATUS_TABLE_ONLY=1  # same as -t
+export SSTATUS_COLOUR=0      # same as --no-colour (SSTATUS_COLOR works too)
+```
+
+Booleans are true for `1`, `true`, `yes` or `on`, and false for anything else. Options given on the command line always win.
 
 ## Oversubscription
 Partitions configured with `OverSubscribe=FORCE:n` in `slurm.conf` run up to `n` jobs per CPU, so their CPU totals are multiplied by `n` and the partition name gets an `(nx)` suffix. A partition holding a single 40 core node with `OverSubscribe=FORCE:4` reports 160 CPUs:

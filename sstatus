@@ -5,6 +5,7 @@ SLURM cluster by partition or individual nodes.
 """
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -17,6 +18,8 @@ FALLBACK_WIDTH = 80
 MIN_BAR_WIDTH = 10
 # a data center server rarely holds more than 8 cards, so a shorter bar will do
 MIN_GPU_BAR_WIDTH = 8
+# prefix for the environment variables that mirror the command line options
+ENV_PREFIX = "SSTATUS_"
 # column separator
 SEP = " | "
 # matches ANSI escape sequences, needed to measure the printable width of a string
@@ -524,32 +527,77 @@ def print_queued_tres_hours():
             print(f"  GPUs: {total_gpus} ({format_tres_hours(total_gpu_hours)} GPU hours)")
 
 
+def env_flag(name, default=False):
+    """
+    Reads a boolean option from the environment, where 1, true, yes and on
+    are true and anything else is false.
+    """
+    value = os.environ.get(ENV_PREFIX + name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def env_int(name):
+    """
+    Reads a numeric option from the environment, or None when it isn't set.
+    """
+    value = os.environ.get(ENV_PREFIX + name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        sys.exit(f"error: {ENV_PREFIX}{name} must be a number, not '{value}'.")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Displays a SLURM cluster allocation summary by partition or per node. https://github.com/KasperSkytte/sstatus"
+        description="Displays a SLURM cluster allocation summary by partition or per node. https://github.com/KasperSkytte/sstatus",
+        epilog=f"Every option can also be set with an environment variable, so preferences can be "
+               f"exported from ~/.bashrc: {ENV_PREFIX}NODES, {ENV_PREFIX}COMPACT, {ENV_PREFIX}WIDTH, "
+               f"{ENV_PREFIX}TABLE_ONLY and {ENV_PREFIX}COLOUR. Booleans are true for 1, true, yes or on. "
+               f"Options given on the command line take precedence."
     )
+    # every option defaults to None so that the environment can tell an option
+    # that was actually given on the command line from one that was left out
     parser.add_argument(
-        "-n", "--nodes", action="store_true",
+        "-n", "--nodes", action="store_true", default=None,
         help="show per-node status instead of by partition."
     )
     width = parser.add_mutually_exclusive_group()
     width.add_argument(
-        "-c", "--compact", action="store_true",
+        "-c", "--compact", action="store_true", default=None,
         help="don't stretch the table to fill the window, only print it as wide as its contents require."
     )
     width.add_argument(
-        "-w", "--width", type=int, metavar="COLUMNS",
+        "-w", "--width", type=int, metavar="COLUMNS", default=None,
         help="fill this many columns instead of the width of the window."
     )
     parser.add_argument(
-        "-t", "--table-only", action="store_true",
+        "-t", "--table-only", action="store_true", default=None,
         help="print only the table, without the surrounding job, queue and reservation summaries."
     )
     parser.add_argument(
-        "--no-colour", "--no-color", dest="colour", action="store_false",
+        "--no-colour", "--no-color", dest="colour", action="store_false", default=None,
         help="don't colourize the bars."
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.nodes is None:
+        args.nodes = env_flag("NODES")
+    if args.table_only is None:
+        args.table_only = env_flag("TABLE_ONLY")
+    if args.colour is None:
+        args.colour = env_flag("COLOUR", env_flag("COLOR", True))
+    # -c and -w override each other, so the environment only gets a say when
+    # neither of them was given on the command line
+    if args.compact is None and args.width is None:
+        args.compact = env_flag("COMPACT")
+        args.width = env_int("WIDTH")
+    args.compact = bool(args.compact)
+
+    return args
 
 
 def main():
