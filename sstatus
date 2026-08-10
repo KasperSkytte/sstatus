@@ -368,10 +368,11 @@ def sum_resources(nodes, os_factor=None):
 
 def count_nodes(nodes):
     """
-    Describes a group of nodes as "idle/total".
+    Describes a group of nodes as "idle/allocated/total".
     """
     idle = sum(1 for node in nodes if not node.unavailable and not node.cpu_used)
-    return f"{idle}/{len(nodes)}"
+    allocated = sum(1 for node in nodes if node.cpu_used)
+    return f"{idle}/{allocated}/{len(nodes)}"
 
 
 def print_partition_summary(partitions, partition_nodes, all_nodes, cluster_totals, total_width):
