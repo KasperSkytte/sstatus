@@ -1,6 +1,12 @@
 # sstatus
 `sstatus` shows a quick overview of the current allocation status of a SLURM cluster with some colored bars per partition or node. It also shows some info about pending jobs and upcoming reservations. When a node is unavailable (based on reason codes), it will be marked with an asterisk `*`. Data is collected from `sinfo`, `squeue`, and `scontrol`. Column alignment scales dynamically to the length of node and partition names as well as the current terminal window size (best effort).
 
+## Screenshots
+### Per partition
+![partition](www/sstatus_partition.png)
+
+### Per node
+![node](www/sstatus_node.png)
 ## Requirements
 Just python3 and its default packages. A slurm cluster, obviously.
 
@@ -58,9 +64,3 @@ The per-node table (`-n`) scales a node's CPU total the same way, and a node in 
 
 Only `FORCE:n` is picked up. `OverSubscribe=YES:n` is left at 1x, because there the sharing only happens for jobs that explicitly ask for it, so the extra capacity isn't something the partition can be counted on to provide.
 
-## Screenshots
-### Per partition
-![partition](www/sstatus_partition.png)
-
-### Per node
-![node](www/sstatus_node.png)
